@@ -58,8 +58,12 @@
           flex-direction: column;
           z-index: 12;
           flex-shrink: 0;
-          /* 不透明标题栏 */
+          /* 不透明标题栏，底部两角圆角，与输入栏呼应 */
           background: var(--c-story-bg-top, #ffffff);
+          border-radius: 0 0 14px 14px;
+          box-shadow:
+            0 2px 8px rgba(0, 0, 0, 0.022),
+            0 8px 20px rgba(0, 0, 0, 0.014);
         }
         .story-header-safe-area {
           height: var(--page-header-safe-top, 48px);
@@ -103,14 +107,13 @@
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          box-shadow: var(--story-paper-shadow);
+          box-shadow: var(--story-paper-shadow-soft);
           transition: all 0.2s ease;
         }
         .story-top-btn:active {
           transform: scale(0.92);
           opacity: 0.85;
         }
-        [data-story-theme="night"] .story-top-btn,
         [data-story-theme="night"] .story-character-chip,
         [data-story-theme="night"] .story-load-more-btn,
         [data-story-theme="night"] .story-bubble {
@@ -159,24 +162,58 @@
           margin-bottom: 12px;
           font-weight: 600;
         }
-        .story-character-list { display: grid; gap: 10px; overflow: hidden; }
+        /* 角色选择：一行三个，圆形头像 + 下方小字姓名 */
+        .story-character-list {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 16px 8px;
+          overflow: hidden;
+        }
         .story-character-chip {
           display: flex;
+          flex-direction: column;
           align-items: center;
-          gap: 12px;
-          padding: 12px 14px;
+          gap: 7px;
+          padding: 4px 2px;
           border-radius: 0;
           overflow: hidden;
           max-width: 100%;
           box-sizing: border-box;
           border: none;
-          background: var(--c-story-panel, rgba(255, 255, 255, 0.5));
-          box-shadow: var(--story-paper-shadow-soft);
+          background: transparent;
+          box-shadow: none;
           transition: all 0.2s;
         }
-        .story-character-chip[data-active="true"] {
-          background: var(--c-story-panel-active, rgba(255, 255, 255, 0.9));
-          box-shadow: var(--story-paper-shadow);
+        .story-app-shell .story-character-chip .ui-avatar {
+          border-radius: 999px;
+          box-shadow: var(--story-paper-shadow-soft);
+        }
+        .story-character-chip[data-active="true"] .ui-avatar {
+          box-shadow: 0 0 0 2px var(--c-story-heading, #1e293b);
+        }
+        .story-character-name {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: calc(10px*var(--app-text-scale,1));
+          color: var(--c-story-sub, #94a3b8);
+          line-height: 1.3;
+        }
+        .story-character-chip[data-active="true"] .story-character-name {
+          color: var(--c-story-heading, #1e293b);
+          font-weight: 600;
+        }
+        .story-tool-btn {
+          width: 100%;
+          padding: 12px 0;
+          border: none;
+          border-radius: 0;
+          background: var(--c-story-panel, rgba(255, 255, 255, 0.5));
+          box-shadow: var(--story-paper-shadow-soft);
+          color: var(--c-story-text, #3a3b3c);
+          font-size: calc(13px*var(--app-text-scale,1));
+          cursor: pointer;
         }
         .story-pref-row {
           display: flex;
@@ -271,6 +308,35 @@
         .story-meta-cover img {
           width: 100%; height: 100%; object-fit: cover;
           filter: contrast(0.95) brightness(1.05); /* 日系褪色滤镜 */
+        }
+        /* 无头像时的灰色系兜底封面：灰阶渐变 + 宋体首字，素面书封 */
+        .story-meta-cover-fallback {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          background: #f6f6f6;
+        }
+        .story-meta-cover-char {
+          font-family: var(--story-font, serif);
+          font-size: 30px;
+          font-weight: 600;
+          color: #b6b6b6;
+          line-height: 1;
+        }
+        .story-meta-cover-line {
+          width: 18px;
+          height: 1px;
+          background: #d5d5d5;
+        }
+        .story-meta-cover-sub {
+          font-size: 8px;
+          letter-spacing: 3px;
+          color: #c9c9c9;
+          text-transform: uppercase;
         }
         .story-meta-body {
           flex: 1;
@@ -380,10 +446,12 @@
           user-select: none;
           -webkit-touch-callout: none;
         }
-        /* 剧情页内头像随整体风格改为方形纸片 */
+        /* 剧情页内头像随整体风格改为方形纸片；兜底字母头像用白底 */
         .story-app-shell .ui-avatar {
           border-radius: 0;
           box-shadow: var(--story-paper-shadow-soft);
+          background: var(--c-story-bubble-bg, #ffffff);
+          color: var(--c-story-sub, #94a3b8);
         }
         /* 富文本内容禁用原生选中，避免长按手势误触发 */
         .story-richtext {
@@ -437,7 +505,7 @@
         .story-bubble {
           border-radius: 0;
           padding: 0;
-          line-height: 1.68;
+          line-height: 1.78;
           font-size: calc(14px*var(--app-text-scale,1));
           white-space: pre-wrap;
           word-break: break-word;
@@ -459,10 +527,21 @@
           border: none;
           box-shadow: none;
           padding: 8px;
-          font-size: calc(12px*var(--app-text-scale,1));
+          font-size: calc(11.5px*var(--app-text-scale,1));
           color: var(--c-story-sub, #94a3b8);
-          text-align: center;
-          font-style: italic;
+          text-align: left;
+          font-style: normal;
+        }
+        /* 系统消息（报错等）内的富文本跟随小字样式：
+           不让 .story-richtext 的 14px/两端对齐/首行缩进盖回来 */
+        .story-row[data-role="system"] .story-richtext {
+          font-size: calc(11.5px*var(--app-text-scale,1));
+          text-align: left;
+          line-height: 1.7;
+        }
+        .story-row[data-role="system"] .story-richtext p {
+          text-indent: 0;
+          margin: 0.4em 0;
         }
         /* === 底部输入栏（固定在底部，无圆角） === */
         .story-composer {
@@ -474,11 +553,12 @@
           background: var(--c-story-input-bar, var(--c-story-meta-bg, #ffffff));
           border: none;
           min-height: 52px;
-          border-radius: 0;
-          /* 上方向柔和弥散阴影：不用 1px 锐边层，避免看起来像一条描边 */
+          /* 仅上边缘两角圆角 */
+          border-radius: 14px 14px 0 0;
+          /* 上方向轻柔弥散阴影 */
           box-shadow:
-            0 -3px 10px rgba(0, 0, 0, 0.04),
-            0 -12px 28px rgba(0, 0, 0, 0.03);
+            0 -2px 8px rgba(0, 0, 0, 0.022),
+            0 -8px 20px rgba(0, 0, 0, 0.014);
           padding: 8px 12px calc(env(safe-area-inset-bottom, 0px) + 8px);
           display: flex;
           align-items: flex-end;
@@ -532,7 +612,7 @@
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          box-shadow: var(--story-paper-shadow);
+          box-shadow: var(--story-paper-shadow-soft);
           transition: transform 0.16s ease, box-shadow 0.16s ease, color 0.16s ease, background 0.16s ease;
         }
         .story-send-btn:not(:disabled) {
@@ -615,6 +695,23 @@
         .story-richtext blockquote p,
         .story-richtext li p {
           text-indent: 0;
+        }
+        /* 折叠块（思维链等）内一律不做首行缩进：
+           AI 思考文本的空行习惯不统一，段落缩进忽有忽无反而杂乱 */
+        .story-fold-block__content p,
+        .story-summary-fold__content p {
+          text-indent: 0;
+        }
+        /* 单换行(<br>)后一行的缩进占位符（渲染器注入） */
+        .story-richtext .story-br-indent {
+          display: inline-block;
+          width: 2em;
+        }
+        /* 折叠块与系统消息内保持齐头，占位符归零 */
+        .story-fold-block__content .story-br-indent,
+        .story-summary-fold__content .story-br-indent,
+        .story-row[data-role="system"] .story-br-indent {
+          width: 0;
         }
         .story-richtext p:first-child {
           margin-top: 0;
@@ -816,7 +913,7 @@
           margin-left: 0;
         }
         .story-fold-translate-btn[data-active] {
-          color: var(--c-story-accent, #e5484d);
+          color: var(--c-story-heading, #1e293b);
           font-weight: 600;
         }
         .story-fold-translation {
