@@ -6,12 +6,10 @@
 // 逐字段重建，不做透传：形状不对、超长、越界的一概丢掉。
 // 抽成独立模块是为了能脱离路由单测——这段错了不会报错，只会让所有人的配方悄悄变形。
 
-/** 一格最多叠几件（与应用侧 MIX_SLOT_MAX 一致） */
-export const MAX_PARTS_PER_KIND = 3;
 /** 只能放一件的格：叠了也没意义，直接判非法，免得别人下载下来一脸问号 */
-export const SINGLE_PART_KINDS: readonly string[] = ["character", "persona"];
-/** 整份引用数组的条数上限：十格、单件格各 1、其余各 3 */
-export const MAX_RECIPE_PARTS = 30;
+export const SINGLE_PART_KINDS: readonly string[] = ["character", "persona", "preface"];
+/** 整份引用数组的条数上限：纯防滥用的护栏（正常配方远碰不到），不是玩法限制 */
+export const MAX_RECIPE_PARTS = 200;
 
 const COMPARE_OPS: readonly string[] = [">", ">=", "<", "<=", "=", "!="];
 
@@ -72,11 +70,26 @@ export function normalizePartCondition(value: unknown): PartCondition | undefine
 /**
  * 机括是唯一一类「下载下来会在别人设备上按轮执行、还能改写对话」的材料，
  * 所以除了通用的 payload 体积上限，再单独卡一道：代码写不了那么长，
- * 停靠位必须是认识的那四个。卡紧一点也让混淆塞大段东西变得更难。
+ * 界面摆放必须是一份认得出的数据。卡紧一点也让混淆塞大段东西变得更难。
  */
 const MAX_MECHANISM_SCRIPT = 40_000;
 const MAX_MECHANISM_PANEL = 200_000;
 const MECHANISM_DOCKS: readonly string[] = ["left", "right", "bottom", "float"];
+
+/**
+ * 界面摆放：只看形状，不夹边界。数值越界交给下载方的 normalizeMixPanelLayout
+ * 去夹——这一段刻意不 import 应用侧模块，好脱离运行时单测。
+ */
+function isPanelLayout(value: unknown): boolean {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    for (const key of ["x", "y", "w", "h"]) {
+        if (!Number.isFinite(Number(record[key]))) return false;
+    }
+    if (record.chrome !== undefined && record.chrome !== "bar" && record.chrome !== "none") return false;
+    if (record.z !== undefined && !Number.isFinite(Number(record.z))) return false;
+    return true;
+}
 
 export function validateMechanismPayload(payload: unknown): string | null {
     if (!payload || typeof payload !== "object") return "missing_payload";
@@ -89,8 +102,14 @@ export function validateMechanismPayload(payload: unknown): string | null {
     if (record.dock !== undefined && record.dock !== null && !MECHANISM_DOCKS.includes(String(record.dock))) {
         return "invalid_dock";
     }
-    // 有界面就必须有停靠位，否则下载方不知道该把它挂在哪
-    if (panel.trim() && !record.dock) return "配了界面就要选一个停靠位。";
+    // 摆放是纯数据（百分比坐标与几个开关），下载方拿到后还会自己夹一遍边界；
+    // 这里只挡住"根本不是一份摆放"的东西。
+    if (record.layout !== undefined && record.layout !== null && !isPanelLayout(record.layout)) {
+        return "invalid_layout";
+    }
+    // 不再要求"配了界面就得声明画在哪"。摆放已经收进界面代码里（mix.move / mix.size /
+    // mix.chrome …），新材料本来就没有 layout 与 dock 字段；下载方拿到后给一个中性起始值，
+    // 第一帧之后由界面代码自己挪走。这里再拦一道，等于把新写法全挡在门外。
     return null;
 }
 
@@ -114,8 +133,7 @@ export function normalizeRecipeParts(
         if (!id || !name || !options.materialKinds.includes(kind)) return { error: "invalid_part" };
         if (builtin && !id.startsWith("mix_builtin_")) return { error: "invalid_builtin_part" };
         const used = kindCount.get(kind) ?? 0;
-        const limit = SINGLE_PART_KINDS.includes(kind) ? 1 : MAX_PARTS_PER_KIND;
-        if (used >= limit) return { error: "too_many_parts_in_kind" };
+        if (SINGLE_PART_KINDS.includes(kind) && used >= 1) return { error: "too_many_parts_in_kind" };
         kindCount.set(kind, used + 1);
         // 角色卡与面具不设条件；其余按白名单重建，非法就当没条件
         const when = SINGLE_PART_KINDS.includes(kind) ? undefined : normalizePartCondition(record.when);

@@ -19,6 +19,8 @@ import { buildTwoLevelMomentThreads } from "@/lib/moments-comment-threading";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { splitBilingualText } from "@/lib/bilingual-text";
 import { retryMomentGeneratedPhoto } from "@/lib/generated-image-retry";
+import { hasCharacterReferenceImage } from "@/lib/image-generation-service";
+import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
 import { Trash2, MoreHorizontal, MapPin, Heart, MessageCircle, Pencil } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui";
 
@@ -41,8 +43,13 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
     const [showPhotoPromptEditor, setShowPhotoPromptEditor] = useState(false);
     const [photoPromptDraft, setPhotoPromptDraft] = useState("");
     const [photoRegenerating, setPhotoRegenerating] = useState(false);
+    const characterId = post.authorType === "character" ? post.authorId : undefined;
+    const [hasRef, setHasRef] = useState(() => hasCharacterReferenceImage(characterId));
+    const [photoUseReferenceDraft, setPhotoUseReferenceDraft] = useState(post.photoUseReferenceImage === true);
     const [showFallbackPreview, setShowFallbackPreview] = useState(false);
+    // photoRetryError 只用于提示词弹窗内的即时校验；生成失败改用一次性弹窗，不再挂红字
     const [photoRetryError, setPhotoRetryError] = useState("");
+    const [photoFailureNotice, setPhotoFailureNotice] = useState("");
     const [showPostActions, setShowPostActions] = useState(false);
     const postActionsRef = useRef<HTMLDivElement>(null);
     const postActionsBtnRef = useRef<HTMLButtonElement>(null);
@@ -59,22 +66,34 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
     const [resolvedPhotoUrl, setResolvedPhotoUrl] = useState<string | null>(null);
     useEffect(() => {
         let cancelled = false;
-        setResolvedPhotoUrl(null);
 
-        if (post.photoUrl?.startsWith("asset://")) {
+        if (!post.photoUrl) {
+            setResolvedPhotoUrl(null);
+            return;
+        }
+
+        if (post.photoUrl.startsWith("asset://")) {
             const assetId = post.photoUrl.slice(8);
             getChatImageFromIndexedDB(assetId).then(url => {
                 if (cancelled) return;
                 setResolvedPhotoUrl(url || null);
             });
         } else {
-            setResolvedPhotoUrl(post.photoUrl || null);
+            setResolvedPhotoUrl(post.photoUrl);
         }
 
         return () => {
             cancelled = true;
         };
     }, [post.photoUrl]);
+
+    // 如果落库状态为 pending 但实际并没有任何异步任务在跑（比如被刷新/大退杀掉了），
+    // 且帖子本身已有正常 photoUrl，将残留的 pending 复位，防止变成僵尸任务。
+    useEffect(() => {
+        if (post.photoUrl && post.photoGenerationStatus === "pending" && !photoRegenerating) {
+            updateMomentPost(post.id, { photoGenerationStatus: "generated" });
+        }
+    }, [post.id, post.photoUrl, post.photoGenerationStatus, photoRegenerating]);
 
     const chars = loadCharacters();
     // 角色帖子下，用户名用该角色绑定的用户人设；用户自己的帖子用默认人设
@@ -239,31 +258,49 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
     const canRetryPhoto = Boolean(fallbackPhotoDescription);
     const canRegeneratePhoto = Boolean(resolvedPhotoUrl)
         && Boolean(post.photoUrl)
-        && Boolean(post.photoDescription?.trim())
-        && (post.photoGenerationStatus === "generated" || Boolean(post.photoGenerationPrompt));
+        && Boolean(post.photoDescription?.trim());
     const openPhotoPromptEditor = useCallback(() => {
+        const latestHasRef = hasCharacterReferenceImage(characterId);
+        setHasRef(latestHasRef);
         setPhotoPromptDraft(post.photoDescription?.trim() || "");
+        setPhotoUseReferenceDraft(latestHasRef && post.photoUseReferenceImage === true);
         setPhotoRetryError("");
         setShowPhotoPromptEditor(true);
-    }, [post.photoDescription]);
+    }, [characterId, post.photoDescription, post.photoUseReferenceImage]);
     const handleRegeneratePhotoWithPrompt = useCallback(() => {
         const nextDescription = photoPromptDraft.trim();
         if (!nextDescription) {
             setPhotoRetryError("提示词不能为空");
             return;
         }
+        const latestHasRef = hasCharacterReferenceImage(characterId);
         setShowPhotoPromptEditor(false);
         setPhotoRegenerating(true);
         setPhotoRetryError("");
-        retryMomentGeneratedPhoto(post, nextDescription)
-            .then(() => onUpdate())
+        retryMomentGeneratedPhoto(post, nextDescription, latestHasRef ? photoUseReferenceDraft : undefined)
+            .then(async (updated) => {
+                if (updated?.photoUrl?.startsWith("asset://")) {
+                    const assetId = updated.photoUrl.slice(8);
+                    try {
+                        const url = await getChatImageFromIndexedDB(assetId);
+                        if (url) {
+                            const img = new Image();
+                            img.src = url;
+                            if ("decode" in img) await img.decode().catch(() => {});
+                        }
+                    } catch {
+                        // ignore predecode error
+                    }
+                }
+                onUpdate();
+            })
             .catch(error => {
-                setPhotoRetryError(error instanceof Error ? error.message : String(error));
+                setPhotoFailureNotice(error instanceof Error ? error.message : String(error));
             })
             .finally(() => {
                 setPhotoRegenerating(false);
             });
-    }, [onUpdate, photoPromptDraft, post]);
+    }, [characterId, onUpdate, photoPromptDraft, photoUseReferenceDraft, post]);
 
     return (
         <div data-moment-post-id={post.id} className="feed-post relative border-b-[2.5px] border-[var(--c-card-border)] pb-5 mb-5 w-full bg-transparent px-4 pt-2">
@@ -337,7 +374,7 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
             {/* Photo area —— 四块内容全无时整个容器不渲染：空壳会照样吃掉自己的下边距
                 （flex 容器不会自塌陷），无配图的帖子正文和时间行之间就凭空多出一截，看着像空了一行。
                 间距用 mb-3 与卡片其余部分（头像行/正文/位置）对齐，media 原本的 mb-5 是全卡唯一的孤例。 */}
-            {(resolvedPhotoUrl || fallbackPhotoDescription || photoRetryError) && (
+            {(resolvedPhotoUrl || fallbackPhotoDescription) && (
             <div className="feed-post-media mb-3 w-full flex flex-col gap-2">
                 {resolvedPhotoUrl && (
                     <MediaImageWithPreview
@@ -350,6 +387,9 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                         onRegenerate={canRegeneratePhoto ? openPhotoPromptEditor : undefined}
                         regenerating={photoRegenerating}
                     />
+                )}
+                {resolvedPhotoUrl && photoRegenerating && (
+                    <div className="ts-12 text-[var(--c-icon)] opacity-80">图片重新生成中…</div>
                 )}
                 {fallbackPhotoDescription && (
                     <div className="feed-post-photo-retry-stack">
@@ -365,30 +405,6 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                         {post.photoGenerationStatus === "pending" && (
                             <div className="ts-12 text-[var(--c-icon)] opacity-80">图片生成中…</div>
                         )}
-                        {post.photoGenerationStatus === "failed" && post.photoGenerationError && !photoRetryError && (
-                            <div className="feed-post-photo-retry-error">
-                                生成失败：{post.photoGenerationError}
-                                <button
-                                    type="button"
-                                    className="feed-post-photo-error-dismiss"
-                                    aria-label="忽略此提示"
-                                    title="忽略此提示"
-                                    onClick={() => {
-                                        // 叉掉即清状态落库：这条动态从此不再提示（文字描述框保留）
-                                        updateMomentPost(post.id, { photoGenerationStatus: undefined, photoGenerationError: undefined });
-                                        onUpdate();
-                                    }}
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                )}
-                {photoRetryError && (
-                    <div className="feed-post-photo-retry-error">
-                        生成失败：{photoRetryError}
-                        <button type="button" className="feed-post-photo-error-dismiss" aria-label="忽略此提示" onClick={() => setPhotoRetryError("")}>✕</button>
                     </div>
                 )}
             </div>
@@ -415,7 +431,20 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                                 placeholder="输入图片提示词"
                                 disabled={photoRegenerating}
                             />
-                            {photoRetryError && <div className="feed-post-photo-retry-error">生成失败：{photoRetryError}</div>}
+                            {hasRef ? (
+                                <label className="chat-generated-image-prompt-check">
+                                    <input
+                                        type="checkbox"
+                                        checked={photoUseReferenceDraft}
+                                        disabled={photoRegenerating}
+                                        onChange={e => setPhotoUseReferenceDraft(e.target.checked)}
+                                    />
+                                    <span>使用角色参考图（角色出镜）</span>
+                                </label>
+                            ) : (
+                                <div className="chat-generated-image-prompt-empty-hint">该角色未配置参考图</div>
+                            )}
+                            {photoRetryError && <div className="feed-post-photo-retry-error">{photoRetryError}</div>}
                         </div>
                         <div className="modal-footer" data-ui="modal-footer">
                             <button className="ui-btn ui-btn-ghost" onClick={() => setShowPhotoPromptEditor(false)}>取消</button>
@@ -430,6 +459,13 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                     </div>
                 </div>,
                 document.body,
+            )}
+
+            {photoFailureNotice && (
+                <GeneratedImageErrorDialog
+                    message={photoFailureNotice}
+                    onClose={() => setPhotoFailureNotice("")}
+                />
             )}
 
             {editingPostOpen && typeof document !== "undefined" && createPortal(
